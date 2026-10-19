@@ -100,20 +100,16 @@ normal distribution.
 Any factorization $L^top L = Q$ gives a linear map $F(x) = L^(-1) x + mu$ that
 transforms the posterior into a standard normal. By restricting $L$ to be lower
 triangular with a positive diagonal, the choice becomes unique, and $L^top L =
-Q$ is the Cholesky factorization of $Q$.
+Q$ is the (reversed) Cholesky factorization of $Q$.
 
 To make use of the sparsity of $Q$ we use the well developed theory of sparse
 Cholesky factorizations. We write $L = D (I - B)$ with $D$ positive diagonal and
-$B$ strictly lower triangular. Then we can read the inverse of $F^(-1)(y) = D (I
-- B) (y - mu)$ row by row.  // TODO check signs etc
-$
-  x_i = d_i y_i + sum_(j < i) b_(i j) d_i x_j + (d_i mu_i + sum_(j < i) b_(i j) d_i mu_j),
-$
-or, with $"Affine"(sigma, nu)(x) = sigma x + nu$,
+$B$ strictly lower triangular. Then we can read off $F^(-1)(y) = D (I - B) (y -
+mu)$ row by row. With $"Affine"(sigma, nu)(x) = sigma x + nu$,
 $
   F^(-1)_i (y) = "Affine"(sigma_i, nu_i)^(-1)(y_i), quad
   sigma_i = d_i^(-1), quad
-  nu_i = mu_i + sum_(j in P(i)) b_(i j) (y_j - mu_j).
+  nu_i = mu_i + sum_(j < i) b_(i j) (y_j - mu_j).
 $
 
 In a dense $Q$ we have $d (d-1) \/ 2$ regression coefficients, which is too many
@@ -123,22 +119,22 @@ $
   P(i) = {j < i : b_(i j) != 0}.
 $
 
-So when is $b_(i j)$ zero? Exactly when $x_i$ and $x_j$ are conditionally
-independent given the other earlier parameters $x_(< i)$. But this is a
-statement about the _marginal_ distribution of $x_1, dots, x_i$, whereas the
+So when is $b_(i j)$ zero? Exactly when $y_i$ and $y_j$ are conditionally
+independent given the other earlier parameters $y_(< i)$. But this is a
+statement about the _marginal_ distribution of $y_1, dots, y_i$, whereas the
 model directly tells us about conditional independence in the _joint_
-distribution: $Q_(i j) = 0$ means $x_i perp x_j | x_"rest"$. Let's write $G$ for
+distribution: $Q_(i j) = 0$ means $y_i perp y_j | y_"rest"$. Let's write $G$ for
 the graph with an edge wherever $Q_(i j) != 0$.
 
 To get from the joint to the marginals, we can integrate out the last parameter
-$x_d$. For a Gaussian this replaces the precision by its Schur complement,
+$y_d$. For a Gaussian this replaces the precision by its Schur complement,
 $
   Q' = Q_(< d, < d) - Q_(< d, d) Q_(d, < d) \/ Q_(d d),
 $
-and the correction term is nonzero exactly for pairs of parameters that were
-both neighbours of $x_d$. So integrating out a parameter connects all of its
-neighbours with each other. If we keep going and integrate out $x_d, x_(d-1),
-dots, x_(i+1)$, we get the graph of the marginal of $x_1, dots, x_i$, and the
+and the correction term can only be nonzero for pairs of parameters that were
+both neighbours of $y_d$. So integrating out a parameter connects all of its
+neighbours with each other. If we keep going and integrate out $y_d, y_(d-1),
+dots, y_(i+1)$, we get the graph of the marginal of $y_1, dots, y_i$, and the
 edges from $i$ to earlier parameters in that graph are the parents:
 $
   P(i) = {j < i : (i, j) in G union "fill"}.
@@ -219,14 +215,16 @@ $
   placement: auto,
 ) <fig:slices>
 
-In the linear case, $T$ is a scalar affine function and the conditioner is a
-linear function of the parents:
+In the linear case, the transformer is an inverse affine map, and the
+conditioner is a linear function of the parents:
 $
-  T(y; sigma, mu) = sigma (y - mu), quad C (i, y_P(i)) = (d_i, d_i mu_i + sum_(j in P(i)) b_(i j) d_i y_j).
+  T(y; m, ell) = "Affine"(e^ell, m)^(-1)(y) = e^(-ell) (y - m), quad
+  C(i, y_P(i)) = (m_i, ell_i) = (mu_i + sum_(j in P(i)) b_(i j) (y_j - mu_j), -log d_i).
 $
 
-In the following, we assume several conditioners $C_k$, that just add together
-to give the coefficients of the transformer.
+In the following, we assume several conditioners $C_k$ whose outputs add
+together to give the transformer coefficients,
+$pi_i = sum_k C_k (i, y_P(i))$.
 
 #figure(
   conditioner-diagram,
@@ -312,10 +310,11 @@ $F^(-1)$ (i.e., the map from the target space to the adapted space) can be
 evaluated fully in parallel. $F$ is at least partially sequential in nature. The
 evaluation of the residuals involves both directions: We need to map the
 posterior draws from the target space to the adapted space, and apply the
-jacobian of $F$ to the scores. To avoid the full cost of the evaluation of $F$,
-we compute the sparse jacobian during the pass through $F^(-1)$, so that the
-backward pass only needs to solve the triangular linear system, which is much
-faster than a full $F^(-1)$ evaluation.
+transposed jacobian of $F$ to the scores. To avoid the full cost of the
+evaluation of $F$, we compute the sparse jacobian $J_(F^(-1))$ during the pass
+through $F^(-1)$. Since $J_F = J_(F^(-1))^(-1)$, the backward pass then only
+needs to solve a sparse triangular linear system, which is much faster than a
+full $F$ evaluation.
 
 We then need vector jacobian products and jacobian vector products of this
 residual evaluation. In addition, we need the diagonal blocks of the full
