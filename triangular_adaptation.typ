@@ -218,7 +218,7 @@ $
 In the linear case, the transformer is an inverse affine map, and the
 conditioner is a linear function of the parents:
 $
-  T(y; m, ell) = "Affine"(e^ell, m)^(-1)(y) = e^(-ell) (y - m), quad
+  T(y; m, ell) = "Affine"(e^ell, m)^(-1)(y) = e^(-ell) (y - m), \
   C(i, y_P(i)) = (m_i, ell_i) = (mu_i + sum_(j in P(i)) b_(i j) (y_j - mu_j), -log d_i).
 $
 
@@ -244,6 +244,22 @@ structure, but long or asymmetric tails are often a problem. We extend it with
 the sinh-arcsinh family (`sas`, `asymmetric_sas`, `tangent_sas`), which adds
 skewness and tail-weight coefficients. Each transformer keeps a location and
 a scale parameter.
+
+A single `sas` layer is a smooth, monotone map built by applying `asinh`,
+affinely changing its output, and applying `sinh` again. In the generative
+direction, from an adapted value $x$ to a target value $y$, it is
+$
+  T(y; mu, s, alpha, beta, nu) = mu + 2 s / gamma sinh(gamma "asinh"((x - nu) / 2) + 2 log delta), \
+  gamma = exp("asinh"(alpha)), quad delta = exp("asinh"(beta)), quad
+  s = exp(kappa "asinh"(sigma / kappa)).
+$
+Here $mu$ and $nu$ are output and input shifts, $s$ is a positive scale, $gamma$
+controls tail weight, and $delta$ controls skewness. $kappa$ is a fixed hyper
+parameter that prevents exponential blowup of the scale for large inputs. By
+default $kappa = 3$. Setting all coefficients to zero gives the identity, and
+stacking layers composes these monotone shape changes. `asymmetric_sas` allows
+different tail-weight parameters on either side of a center, while `tangent_sas`
+uses an alternative centered parameterization of skew and tail weight.
 
 The conditioner computes those coefficients from the parents. We have three
 different ways of doing that: a constant, a linear function of the parents, and
