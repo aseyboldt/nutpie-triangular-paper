@@ -63,14 +63,24 @@ becomes exact, irrespective of the step size or the dimension of the space. At
 that point one leapfrog with step size $pi / 2$ gives us an independent posterior
 draw.
 
+We use this objective during warmup of the sampler: We start with a simple
+preconditioning function $F$, and use it to produce a couple of posterior draws.
+We then fit $F$ to minimize the Fisher divergence of the adapted distribution,
+with those draws and their scores. We then use the new $F$ to produce more
+draws, and repeat the process. After warmup the preconditioner is fixed.
+
 Compared to minimizing KL divergence, which is the usual approach in mass matrix
 adaptation and variational inference, this has several advantages: It keeps the
 adapted distribution smoother, because it uses derivative information. We can
 also estimate it directly, without a missing constant, so that the estimated
 values are interpretable. Since we use the forward Fisher divergence, and
 compare to a standard normal, it also dominates the KL divergence: $D_F
-(p_cal(A) \| q) \/ 2 >= "KL" (p_cal(A), \| q)$ under mild regularity conditions on
-$p$.
+(p_cal(A) \| q) \/ 2 >= "KL" (p_cal(A), \| q)$ under mild regularity conditions
+on $p$. And last, we can use more information per draw. With the KL divergence
+we only use the draw in isolation, while the Fisher divergence also uses the
+score, which is available for free in HMC. With it, we are not bound by the
+Fisher-Rao lower bound, and can even get exact estimates in special cases, as we
+show in our previous paper @seyboldt2026preconditioninghamiltonianmontecarlo.
 
 #figure(
   split-figure,
@@ -377,62 +387,94 @@ the spatial distance between points that correspond to parameters.
 = Evaluation (llm written)
 
 We compare the triangular flow adaptation (`flow`) with nutpie's default
-diagonal mass matrix adaptation (`diag`) on six models, ranging from 10 to 2907
-parameters. Each configuration runs 4 chains with 3000 warmup draws using
-WALNUTS, once with maximum tree depth 6 and once with 10, all with the exact
-normal trajectory from @fig:split. All runs are on a 12 core AMD EPYC (Zen 5)
+diagonal mass matrix adaptation (`diag`) on 24 models with 3 to 2907
+parameters: 23 from posteriordb and a stochastic volatility model written in
+PyMC. Most of them are the models we excluded from the evaluation of the linear
+preconditioners in @seyboldt2026preconditioninghamiltonianmontecarlo, because
+none of the samplers we compared there converged on them. We did not pick the
+models by how well the flow does on them, to avoid cherry-picking, and the set
+contains several models that no adaptation of a single map can fix, like
+multimodal mixtures.
+
+Each model is sampled with 4 chains and 3000 warmup draws, once with NUTS
+(maximum tree depth 10) and once with WALNUTS (maximum tree depth 6, up to 8
+step size halvings), all with the exact normal trajectory from @fig:split, and
+a single seed per configuration. All runs are on a 12 core AMD EPYC (Zen 5)
 machine (Scaleway STANDARD3-X12C-48G). We report the minimum bulk ESS over all
 parameters, divided either by the total number of gradient evaluations
-including warmup, or by the total wall time including the flow fits
-(@fig:bench).
+including warmup, or by the total wall time of sampling including the flow fits
+(@fig:bench). We count a run as converged if the maximum $hat(R)$ over all
+parameters is at most 1.01.
 
 #figure(
   bench-figure,
   caption: [
     Minimum bulk ESS per 1000 gradient evaluations (left) and per second of wall
-    time (right), both including warmup. Each model has a row for maximum tree
-    depth 6 (upper) and 10 (lower), and the number in brackets is its dimension.
-    Hollow markers are runs with $hat(R) > 1.01$, whose ESS is not trustworthy.
+    time (right), both including warmup. Each model has a row for WALNUTS with
+    maximum tree depth 6 (upper) and NUTS with maximum tree depth 10 (lower), and
+    the number in brackets is its dimension. Hollow markers are runs with
+    $hat(R) > 1.01$, whose ESS is not trustworthy.
   ],
   placement: auto,
 ) <fig:bench>
 
-*Reliability.* With diagonal adaptation 10 of the 12 runs end with $hat(R) >
-1.01$; only non-centred eight schools is fine. On the stochastic volatility
-model and the UK drivers state space model the chains do not mix at all (ESS
-between 5 and 11, $hat(R)$ up to 2.9). With the flow, all runs except the UK
-drivers model reach $hat(R) <= 1.01$. On UK drivers the flow is not quite there
-either ($hat(R)$ 1.02 to 1.03), but it reaches an ESS of 200 to 235, against 5
-with the diagonal mass matrix.
+*Reliability.* With diagonal adaptation 12 of the 48 runs converge, with the
+flow 29. Every run that converges with the diagonal mass matrix also converges
+with the flow. Of the 19 runs where the flow fails, 10 are on models it cannot
+be expected to fix: the three mixture models, which are multimodal, the
+motorcycle splines model, and the Poisson GLMM, where both adaptations diverge
+on every draw with WALNUTS. Eight of the other nine miss the threshold narrowly,
+with $hat(R)$ between 1.010 and 1.035, and only the motorcycle GP with WALNUTS
+is clearly not converged ($hat(R) = 1.13$). On several models the flow turns a
+sampler that does not mix at all into a usable one: on pilots, the UK drivers
+state space model, diamonds, election88 and stochastic volatility the diagonal
+mass matrix ends with an ESS between 5 and 25 in at least one configuration,
+while the flow converges in at least one configuration with an ESS between 700
+and 4700.
 
-*Cost per gradient.* The flow gives higher ESS per gradient in every one of the
-12 runs, between 5 times (non-centred eight schools) and more than 1000 times
-(stochastic volatility, and diamonds with depth 6) more. After adaptation a draw
-costs 4 to 14 gradient evaluations with the flow, compared to 8 to 155 with the
-diagonal mass matrix, and because trajectories become short early in warmup, the
-flow also uses fewer gradient evaluations during warmup in every run, despite
-the additional draws the fits need.
+*Cost per gradient.* In the 29 converged flow runs the flow gives between 2 and
+almost 3000 times the ESS per gradient of the diagonal mass matrix, with a
+median of 34. After adaptation a draw costs 3 to 11 gradient evaluations with
+the flow, compared to up to 745 with the diagonal mass matrix, and because
+trajectories become short early in warmup, the flow also uses fewer gradient
+evaluations during warmup in 43 of the 48 runs, despite the additional draws
+the fits need.
 
-*Wall time.* The gain per gradient is paid for with the time it takes to fit
-the flow, which dominates when gradients are cheap. On both eight schools models
-the flow runs take 0.7 to 1.2 seconds, where diagonal adaptation is done in
-about 0.1 seconds, and on the non-centred version diagonal adaptation has 3 to 4
-times the ESS per second. On the Mth model the two are roughly on par. On the
-harder models the flow is far ahead: 100 to 600 times the ESS per second on
-diamonds and more than 50 times on stochastic volatility, where it reaches an
-ESS of about 2800 in under 3.5 minutes.
+*Wall time.* The gain per gradient is paid for with the time it takes to fit the
+flow. In the converged flow runs the median gain in ESS per second is a factor
+of 5.7, but in 8 of the 29 the flow is slower. On small models with cheap
+gradients the fits dominate: on non-centred eight schools and surgical the
+flow runs take under a second, but diagonal adaptation is done in about 0.1
+seconds. The most expensive case is the hierarchical 2PL model on the SAT data,
+whose 669 parameters have about 39000 edges in $G$. Diagonal adaptation already
+converges there with NUTS in 36 seconds, while the flow takes about 20 minutes.
+On the harder models the flow is far ahead: up to 490 times the ESS per second
+on diamonds, 30 to 290 times on election88, where the flow is also faster in
+absolute terms, and 45 to 160 times on stochastic volatility.
 
 *Centring.* With the flow, the centred eight schools parametrization is sampled
-reliably, with an ESS per gradient within a factor of 1.8 to 3 of the
-non-centred one. The sparse parents of each $theta_j$ (only $mu$ and $log tau$)
-are enough for the conditioner to capture the funnel.
+reliably, with an ESS per gradient within a factor of 1.6 of the non-centred
+one. The sparse parents of each $theta_j$ (only $mu$ and $log tau$) are enough
+for the conditioner to capture the funnel. The same holds for the centred radon
+model with varying slopes, which converges with the flow in both
+configurations, but not with the diagonal mass matrix.
 
-*Divergences.* None of the flow runs has a single divergence. With the diagonal
-mass matrix, centred eight schools with depth 10 has 12.
+*Divergences.* With WALNUTS the flow runs only diverge on the Poisson GLMM, the
+motorcycle splines and the collapsing Gaussian mixture, none of which converge.
+With NUTS the flow runs diverge on 19 of the 24 models, also in 12 of the
+converged runs, for instance 287 times on election88 and 132 times on pilots.
+WALNUTS, which adapts the step size within a trajectory, seems to be the better
+match for the flow.
 
-todo: compare with plain NUTS (the benchmark script enables WALNUTS in all runs
-through `walnuts_max_step_halvings`); single seed per configuration; number of
-posterior draws; does wall time include compilation?
+*Variability.* The diagonal adaptation is reproducible, but the flow fits are
+not: diamonds with NUTS gives an ESS of 2218 in an earlier run with the same
+settings and 1102 here, and the UK drivers model with NUTS 58 and 737. With a
+single seed per configuration the numbers above should be read as orders of
+magnitude.
+
+todo: which models differ from the excluded set of the previous paper; number
+of posterior draws; does wall time include JAX compilation for the stochastic
+volatility model?
 
 
 #bibliography("references.bib")

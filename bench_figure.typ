@@ -1,5 +1,5 @@
 // Benchmark of diagonal (`diag`) versus triangular flow (`flow`) adaptation, read from
-// bench-big.csv. One row per model, sorted by dimension, with WALNUTS (maximum tree depth 6)
+// bench-zen5.csv. One row per model, sorted by dimension, with WALNUTS (maximum tree depth 6)
 // and NUTS (maximum tree depth 10) as two sub-rows. Runs with max R-hat > 1.01 are drawn
 // hollow, since their ESS estimates are not trustworthy.
 
@@ -33,6 +33,7 @@
   "one_comp_mm_elim_abs-one_comp_mm_elim_abs": [One compartment PK],
   "soil-carbon-soil-incubation": [Soil incubation],
   "sat-hier_2pl": [SAT, hierarchical 2PL],
+  "election88-election88_full": [Election 88],
 )
 
 #let models = (
