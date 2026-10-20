@@ -22,8 +22,9 @@
 #title("Triangular transport adaptation in nutpie")
 
 In previous work @seyboldt2026preconditioninghamiltonianmontecarlo we showed how
-minimizing a Fisher divergence can lead to linear preconditioners for MCMC
-sampling. We generalize this to non-linear triangular maps.
+minimizing a Fisher divergence can lead to improved linear preconditioners for
+Hamiltonian Monte Carlo (HMC) sampling. In this paper we generalize this to
+non-linear triangular maps.
 
 Instead of sampling the posterior $p_cal(T)$ on the target space $cal(T) =
 bb(R)^d$ directly, we pick a diffeomorphism $F: cal(A) -> cal(T)$ and run HMC on
@@ -43,8 +44,8 @@ this. Instead of splitting the Hamiltonian $H = K + V$, we split it into the
 Hamiltonian $H = H_q + H_(q p)$, where $H_q$ is the Hamiltonian of the standard
 normal distribution $q$, and $H_(q p)$ is a correction to recover $H$:
 $
-  H_q(x, rho) = 1/2 norm(x)^2 + 1/2 norm(rho)^2, quad
-  H_(q p)(x, rho) = -log ((p_cal(A)(x)) / q(x)).
+  H_q (x, rho) = 1/2 norm(x)^2 + 1/2 norm(rho)^2, quad
+  H_(q p) (x, rho) = -log ((p_cal(A)(x)) / q(x)).
 $
 
 A leapfrog step with this split makes a half-step in the exact flow of $H_q$,
@@ -55,11 +56,21 @@ fisher divergence
 $
   D_F (p_cal(A) \| q) = integral norm(partial_x log((p_cal(A)(x)) / q(x)))^2 p_cal(A)(x) dif x  = integral norm(partial_x log p_cal(A)(x) + x)^2 p_cal(A)(x) dif x
 $
-is exactly the expected squared norm of that gradient, so it is a natural
+is exactly the expected squared norm of that gradient. This makes it a natural
 measure of how close the adapted distribution is to a standard normal. As the
 distance approaches zero, the integration error vanishes and the leapfrog step
 becomes exact, irrespective of the step size or the dimension of the space. At
-that point a leapfrog with step size $pi / 2$ gives us an independent posterior draw.
+that point one leapfrog with step size $pi / 2$ gives us an independent posterior
+draw.
+
+Compared to minimizing KL divergence, which is the usual approach in mass matrix
+adaptation and variational inference, this has several advantages: It keeps the
+adapted distribution smoother, because it uses derivative information. We can
+also estimate it directly, without a missing constant, so that the estimated
+values are interpretable. Since we use the forward Fisher divergence, and
+compare to a standard normal, it also dominates the KL divergence: $D_F
+(p_cal(A) \| q) \/ 2 >= "KL" (p_cal(A), \| q)$ under mild regularity conditions on
+$p$.
 
 #figure(
   split-figure,
@@ -76,16 +87,17 @@ that point a leapfrog with step size $pi / 2$ gives us an independent posterior 
   placement: auto,
 ) <fig:split>
 
-Our previous paper developed three different classes of affine preconditioners
-around this idea: diagonal, dense and low-rank plus diagonal. Generalizations
-that use nonlinear transformations instead seem straightforward at first: We
-simply replace the linear transformation by a normalizing flow like for instance
-a coupling flow. While this does work, we ran into practical issues quickly. As
-the flow becomes more flexible, we need more and more warmup draws to fit it
+Based on this objective, our previous paper developed three different classes of
+affine preconditioners: diagonal, dense and low-rank plus diagonal.
+Generalizations that use nonlinear transformations seem straightforward at
+first: We simply replace the linear transformation by a normalizing flow like
+for instance a coupling flow. While this does work to some extend (nutpie has
+had an implementation since ??) we ran into practical issues quickly. As the
+flow becomes more flexible, we need more and more warmup draws to fit it
 reasonably. To make these ideas more scalable, we use model specific
 information. The structural sparsity of the Hessian encodes which parameters are
 conditionally independent, which constrains the possible dependencies in a flow
-dramatically.
+dramatically for a large class of sufficiently sparse models.
 
 We will develop this framework first in the linear context and then generalize to
 non-linear transformations.
@@ -106,26 +118,26 @@ Q$ is the (reversed) Cholesky factorization of $Q$.
 To make use of the sparsity of $Q$ we use the well developed theory of sparse
 Cholesky factorizations. We write $L = D (I - B)$ with $D$ positive diagonal and
 $B$ strictly lower triangular. Then we can read off $F^(-1)(y) = D (I - B) (y -
-mu)$ row by row. With $"Affine"(sigma, nu)(x) = sigma x + nu$,
+mu)$ row by row. With the scalar function $"Affine"(sigma, nu)(x) = sigma x + nu$,
 $
   F^(-1)_i (y) = "Affine"(sigma_i, nu_i)^(-1)(y_i), quad
   sigma_i = d_i^(-1), quad
   nu_i = mu_i + sum_(j < i) b_(i j) (y_j - mu_j).
 $
 
-In a dense $Q$ we have $d (d-1) \/ 2$ regression coefficients, which is too many
+In a dense $Q$ we have $d (d-1) \/ 2$ coefficients $b_(i j)$, which is too many
 for large models. But in most models the majority of them are exactly zero.
 We call the parameters that do appear in row $i$ its _parents_,
 $
   P(i) = {j < i : b_(i j) != 0}.
 $
 
-So when is $b_(i j)$ zero? Exactly when $y_i$ and $y_j$ are conditionally
-independent given the other earlier parameters $y_(< i)$. But this is a
-statement about the _marginal_ distribution of $y_1, dots, y_i$, whereas the
-model directly tells us about conditional independence in the _joint_
-distribution: $Q_(i j) = 0$ means $y_i perp y_j | y_"rest"$. Let's write $G$ for
-the graph with an edge wherever $Q_(i j) != 0$.
+(todo fix llm text until next paragraph) So when is $b_(i j)$ zero? Exactly when
+$y_i$ and $y_j$ are conditionally independent given the other earlier parameters
+$y_(< i)$. But this is a statement about the _marginal_ distribution of $y_1,
+dots, y_i$, whereas the model directly tells us about conditional independence
+in the _joint_ distribution: $Q_(i j) = 0$ means $y_i perp y_j | y_"rest"$.
+Let's write $G$ for the graph with an edge wherever $Q_(i j) != 0$.
 
 To get from the joint to the marginals, we can integrate out the last parameter
 $y_d$. For a Gaussian this replaces the precision by its Schur complement,
@@ -141,7 +153,7 @@ $
   P(i) = {j < i : (i, j) in G union "fill"}.
 $
 The new edges are called _fill_, and this is exactly the symbolic phase of a
-sparse Cholesky factorisation: $C$ is the Cholesky factor of $Q$ with the
+sparse Cholesky factorisation: $L$ is the Cholesky factor of $Q$ with the
 parameters eliminated from last to first, and its extra nonzeros are the usual
 fill-in.
 
@@ -179,6 +191,12 @@ parents are already known can be computed together. The _level_ of a parameter
 is the length of its longest chain of parents, and the number of levels is the
 number of steps we can't parallelise. Eight schools has three.
 
+We will later see that the order has further consequences in the non-linear
+case, where it can also influence how complex the non-linear maps are. For this
+reason, nutpie supports overrides, that allow users to force important
+hyperparameters to come first in the elimination order, even if it increases
+fill-in.
+
 = Nonlinear triangular maps
 
 So far everything was Gaussian, and the map was linear. Triangular transport
@@ -196,7 +214,7 @@ exactly one transformation
 $
   F^(-1)(y) = (S_1 (y_1, y_P(1)), dots, S_d (y_d, y_P(d)))
 $
-that transforms it into a standard normal distribution. (todo ref) $S_i$ is
+that transforms it into a standard normal distribution (todo ref), where $S_i$ is
 monotone increasing in its first argument. We split $S_i$ into two parts: a
 scalar monotone function $T$, which we call the _transformer_, and a conditioner
 $C$ that computes the coefficients of $T$ from the parents:
@@ -219,8 +237,8 @@ $
 In the linear case, the transformer is an inverse affine map, and the
 conditioner is a linear function of the parents:
 $
-  T(y; m, ell) = "Affine"(e^ell, m)^(-1)(y) = e^(-ell) (y - m), \
-  C(i, y_P(i)) = (m_i, ell_i) = (mu_i + sum_(j in P(i)) b_(i j) (y_j - mu_j), -log d_i).
+  T(y; m, s) = "Affine"(e^s, m)^(-1)(y) = e^(-s) (y - m), \
+  C(i, y_P(i)) = (m_i, s_i) = (mu_i + sum_(j in P(i)) b_(i j) (y_j - mu_j), -log d_i).
 $
 
 In the following, we assume several conditioners $C_k$ whose outputs add
@@ -239,6 +257,9 @@ $pi_i = sum_k C_k (i, y_P(i))$.
 
 = Choosing the transformer and conditioner
 
+We can control how expressive the preconditioner is, by making choices about
+the transformer and the conditioner.
+
 We support four transformers: The simplest is to just stick with affine. With a
 conditioner that is expressive enough, this can already capture a lot of
 structure, but long or asymmetric tails are often a problem. We extend it with
@@ -250,11 +271,11 @@ A single `sas` layer is a smooth, monotone map built by applying `asinh`,
 affinely changing its output, and applying `sinh` again. In the generative
 direction, from an adapted value $x$ to a target value $y$, it is
 $
-  T(y; mu, s, alpha, beta, nu) = mu + 2 s / gamma sinh(gamma "asinh"((x - nu) / 2) + 2 log delta), \
+  T(y; m, s, alpha, beta, nu) = m + 2 s / gamma sinh(gamma "asinh"((x - nu) / 2) + 2 log delta), \
   gamma = exp("asinh"(alpha)), quad delta = exp("asinh"(beta)), quad
   s = exp(kappa "asinh"(sigma / kappa)).
 $
-Here $mu$ and $nu$ are output and input shifts, $s$ is a positive scale, $gamma$
+Here $m$ and $nu$ are output and input shifts, $s$ is a positive scale, $gamma$
 controls tail weight, and $delta$ controls skewness. $kappa$ is a fixed hyper
 parameter that prevents exponential blowup of the scale for large inputs. By
 default $kappa = 3$. Setting all coefficients to zero gives the identity, and
@@ -281,7 +302,7 @@ During a warmup window we have a set of draws $y^((k))$ and corresponding scores
 $beta^((k))$, and we want to fit the map $F_theta$ to minimize the estimate of
 the Fisher divergence
 $
-  hat(D)_F(p_cal(A) \| q) =
+  hat(D)_F (p_cal(A) \| q) =
   1 / N sum_k norm(alpha^((k)) + x^((k)))^2
   = 1 / N sum_k norm(r^((k)))^2,
   quad r^((k)) = alpha^((k)) + x^((k)),

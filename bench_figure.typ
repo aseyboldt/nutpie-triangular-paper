@@ -5,7 +5,7 @@
 
 #import "@preview/lilaq:0.6.0" as lq
 
-#let rows = csv("bench-big.csv", row-type: dictionary)
+#let rows = csv("bench-zen5.csv", row-type: dictionary)
 
 // Display names; models not listed here show their posteriordb name.
 #let labels = (
