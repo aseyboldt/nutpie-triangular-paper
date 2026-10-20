@@ -1,4 +1,4 @@
-#set document(title: "Triangular transport adaptation in nutpie")
+#set document(title: "Triangular transport adaptation in nutpie", author: "Adrian Seyboldt")
 
 #set page(
   paper: "a4",
@@ -15,6 +15,7 @@
 #import "split_figure.typ": split-figure
 #import "transformer_figure.typ": slice-figure, conditioner-diagram
 #import "fill_figure.typ": fill-figure
+#import "bench_figure.typ": bench-figure
 
 #let inner(x, y) = $lr(angle.l #x, #y angle.r)$
 
@@ -352,16 +353,65 @@ affect the posterior draws, only the efficiency of the sampler.
 We need model specific information about the model, for instance
 the spatial distance between points that correspond to parameters.
 
-= Evaluation
+= Evaluation (llm written)
 
-todo examples:
+We compare the triangular flow adaptation (`flow`) with nutpie's default
+diagonal mass matrix adaptation (`diag`) on six models, ranging from 10 to 2907
+parameters. Each configuration runs 4 chains with 3000 warmup draws using
+WALNUTS, once with maximum tree depth 6 and once with 10, all with the exact
+normal trajectory from @fig:split. All runs are on a 12 core AMD EPYC (Zen 5)
+machine (Scaleway STANDARD3-X12C-48G). We report the minimum bulk ESS over all
+parameters, divided either by the total number of gradient evaluations
+including warmup, or by the total wall time including the flow fits
+(@fig:bench).
 
-centered eight school is perfectly fine, and gives better ess/grad than
-noncentered eight school. Optimization takes in total ~4s for 4 chains.
+#figure(
+  bench-figure,
+  caption: [
+    Minimum bulk ESS per 1000 gradient evaluations (left) and per second of wall
+    time (right), both including warmup. Each model has a row for maximum tree
+    depth 6 (upper) and 10 (lower), and the number in brackets is its dimension.
+    Hollow markers are runs with $hat(R) > 1.01$, whose ESS is not trustworthy.
+  ],
+  placement: auto,
+) <fig:bench>
 
-2000 dim stochastic volatility model samples with very good ess/grad in ~4min.
+*Reliability.* With diagonal adaptation 10 of the 12 runs end with $hat(R) >
+1.01$; only non-centred eight schools is fine. On the stochastic volatility
+model and the UK drivers state space model the chains do not mix at all (ESS
+between 5 and 11, $hat(R)$ up to 2.9). With the flow, all runs except the UK
+drivers model reach $hat(R) <= 1.01$. On UK drivers the flow is not quite there
+either ($hat(R)$ 1.02 to 1.03), but it reaches an ESS of 200 to 235, against 5
+with the diagonal mass matrix.
 
-Dense posteriors with >200 dim run out of memory quickly, and get quite
-inefficient.
+*Cost per gradient.* The flow gives higher ESS per gradient in every one of the
+12 runs, between 5 times (non-centred eight schools) and more than 1000 times
+(stochastic volatility, and diamonds with depth 6) more. After adaptation a draw
+costs 4 to 14 gradient evaluations with the flow, compared to 8 to 155 with the
+diagonal mass matrix, and because trajectories become short early in warmup, the
+flow also uses fewer gradient evaluations during warmup in every run, despite
+the additional draws the fits need.
+
+*Wall time.* The gain per gradient is paid for with the time it takes to fit
+the flow, which dominates when gradients are cheap. On both eight schools models
+the flow runs take 0.7 to 1.2 seconds, where diagonal adaptation is done in
+about 0.1 seconds, and on the non-centred version diagonal adaptation has 3 to 4
+times the ESS per second. On the Mth model the two are roughly on par. On the
+harder models the flow is far ahead: 100 to 600 times the ESS per second on
+diamonds and more than 50 times on stochastic volatility, where it reaches an
+ESS of about 2800 in under 3.5 minutes.
+
+*Centring.* With the flow, the centred eight schools parametrization is sampled
+reliably, with an ESS per gradient within a factor of 1.8 to 3 of the
+non-centred one. The sparse parents of each $theta_j$ (only $mu$ and $log tau$)
+are enough for the conditioner to capture the funnel.
+
+*Divergences.* None of the flow runs has a single divergence. With the diagonal
+mass matrix, centred eight schools with depth 10 has 12.
+
+todo: compare with plain NUTS (the benchmark script enables WALNUTS in all runs
+through `walnuts_max_step_halvings`); single seed per configuration; number of
+posterior draws; does wall time include compilation?
+
 
 #bibliography("references.bib")
