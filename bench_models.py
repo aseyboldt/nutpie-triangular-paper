@@ -13,8 +13,10 @@ Examples:
 """
 
 import argparse
+import collections
 import dataclasses
 import hashlib
+import itertools
 import json
 import os
 import platform
@@ -22,6 +24,7 @@ import re
 import sys
 import time
 import traceback
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -556,14 +559,47 @@ def parse_model(arg):
     return MODEL_KINDS[kind](name)
 
 
+class WarningCounter:
+    """Collect warnings instead of printing them, to report them at the end."""
+
+    def __init__(self):
+        self.counts = collections.Counter()
+
+    def add(self, message, category, filename, lineno, file=None, line=None):
+        self.counts[(category.__name__, str(message), filename, lineno)] += 1
+
+    def report(self):
+        if not self.counts:
+            return
+        print(f"\n{len(self.counts)} distinct warnings:")
+        for (category, message, filename, lineno), count in self.counts.most_common():
+            first_line = message.splitlines()[0] if message else ""
+            print(f"  {count:>6}x {category}: {first_line}")
+            print(f"          at {filename}:{lineno}")
+
+
 def main(argv=None):
     args = parse_args(argv)
+    counter = WarningCounter()
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        warnings.showwarning = counter.add
+        try:
+            interrupted = benchmark(args)
+        finally:
+            counter.report()
+    if interrupted:
+        sys.exit(130)
+
+
+def benchmark(args):
+    """Run the benchmark. Returns whether it was interrupted."""
     model_configs = select_models(args)
 
     if args.list:
         for model_config in model_configs:
             print(f"{model_config.kind}:{model_config.name}")
-        return
+        return False
 
     machine = machine_info() + args.cache_tag
     print(machine)
@@ -584,44 +620,49 @@ def main(argv=None):
     ]
 
     records = []
-    for model_config in model_configs:
-        for sampler in samplers:
-            for seed in args.seeds:
-                meta = {
-                    "kind": model_config.kind,
-                    "name": model_config.name,
-                    "seed": seed,
-                    **dataclasses.asdict(sampler),
-                }
-                run_args = (model_config, sampler, seed, machine)
-                run_kwargs = {
-                    "paths": paths,
-                    "timeout": args.timeout * 60,
-                    "max_memory": args.max_memory,
-                }
-                cached = cached_run.check_call_in_cache(*run_args, **run_kwargs)
-                try:
-                    record = cached_run(*run_args, **run_kwargs)
-                except RunStopped as e:
-                    records.append({**meta, "error": f"stopped: {e}"})
-                    continue
-                except Exception as e:
-                    traceback.print_exc()
-                    print(f"Error in {meta}: {e}")
-                    records.append({**meta, "error": repr(e)})
-                    continue
-                records.append({**meta, **record, "cached": cached, "error": None})
-                print(
-                    "[cached]  " if cached else "[computed]",
-                    model_config.name,
-                    sampler.adaptation,
-                    f"walnuts={sampler.walnuts}",
-                    f"seed={seed}",
-                    f"ess={record['ess']:.1f}",
-                    f"div={record['divergences']}",
-                    f"rhat={record['rhat']:.3f}",
-                    f"time={record['time']:.1f}s",
-                )
+    interrupted = False
+    runs = itertools.product(model_configs, samplers, args.seeds)
+    for model_config, sampler, seed in runs:
+        meta = {
+            "kind": model_config.kind,
+            "name": model_config.name,
+            "seed": seed,
+            **dataclasses.asdict(sampler),
+        }
+        run_args = (model_config, sampler, seed, machine)
+        run_kwargs = {
+            "paths": paths,
+            "timeout": args.timeout * 60,
+            "max_memory": args.max_memory,
+        }
+        cached = cached_run.check_call_in_cache(*run_args, **run_kwargs)
+        try:
+            record = cached_run(*run_args, **run_kwargs)
+        except KeyboardInterrupt:
+            print(f"Interrupted in {meta}, writing the results so far")
+            records.append({**meta, "error": "interrupted"})
+            interrupted = True
+            break
+        except RunStopped as e:
+            records.append({**meta, "error": f"stopped: {e}"})
+            continue
+        except Exception as e:
+            traceback.print_exc()
+            print(f"Error in {meta}: {e}")
+            records.append({**meta, "error": repr(e)})
+            continue
+        records.append({**meta, **record, "cached": cached, "error": None})
+        print(
+            "[cached]  " if cached else "[computed]",
+            model_config.name,
+            sampler.adaptation,
+            f"walnuts={sampler.walnuts}",
+            f"seed={seed}",
+            f"ess={record['ess']:.1f}",
+            f"div={record['divergences']}",
+            f"rhat={record['rhat']:.3f}",
+            f"time={record['time']:.1f}s",
+        )
 
     machine_hash = hashlib.sha256(machine.encode()).hexdigest()[:12]
     df = pd.DataFrame.from_records(records).assign(machine=machine_hash)
@@ -630,11 +671,17 @@ def main(argv=None):
     meta_path = args.output.with_suffix(".json")
     meta_path.write_text(
         json.dumps(
-            {"machine": machine, "machine_hash": machine_hash, "argv": sys.argv},
+            {
+                "machine": machine,
+                "machine_hash": machine_hash,
+                "argv": sys.argv,
+                "interrupted": interrupted,
+            },
             indent=2,
         )
     )
     print(f"Wrote {args.output} and {meta_path}")
+    return interrupted
 
 
 if __name__ == "__main__":
