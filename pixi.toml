@@ -1,0 +1,59 @@
+[workspace]
+authors = ["Adrian Seyboldt <adrian.seyboldt@gmail.com>"]
+channels = ["conda-forge"]
+description = "Benchmarks and paper sources for triangular flow adaptation in nutpie"
+name = "nutpie-flow-paper"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+paper = "typst compile triangular_adaptation.typ"
+bench = { cmd = "python bench_models.py", depends-on = [
+  "get-posteriordb",
+  "get-model-catalogue",
+  "gen-mmm-data",
+] }
+
+[tasks.get-posteriordb]
+cmd = "test -d posteriordb || (git clone https://github.com/stan-dev/posteriordb && git -C posteriordb checkout 41b523f)"
+
+[tasks.get-model-catalogue]
+cmd = "test -d pymc-model-catalogue || (git clone https://github.com/pymc-devs/pymc-model-catalogue && git -C pymc-model-catalogue checkout 6540f7f)"
+
+# The patch makes the data generator work with pymc-marketing >= 0.19. Drop
+# it once that is fixed upstream.
+[tasks.get-mmm-param-recovery]
+cmd = "test -d mmm-param-recovery || (git clone https://github.com/pymc-labs/mmm-param-recovery && git -C mmm-param-recovery checkout 1f84d93 && git -C mmm-param-recovery apply ../patches/mmm-param-recovery-xtensor.patch)"
+
+[tasks.gen-mmm-data]
+cmd = "test -d data/mmm || python generate_mmm_data.py"
+depends-on = ["get-mmm-param-recovery"]
+
+[dependencies]
+python = ">=3.12.7,<3.13"
+numpy = ">=2,<2.5"
+scipy = ">=1.11"
+pandas = ">=2"
+arviz = ">=1.1,<2"
+joblib = ">=1.5"
+watermark = ">=2.5,<3"
+scikit-sparse = ">=0.5.0,<0.6"
+pymetis = ">=2025.2.2,<2026"
+typst = "*"
+# nutpie is built from source
+maturin = ">=1.7.7"
+rust = "*"
+
+[pypi-dependencies]
+# Unreleased nutpie features are needed. Pin this to a git rev before publishing.
+nutpie = { path = "..", editable = true, extras = ["stan", "nnflow"] }
+posteriordb = ">=0.2.0,<0.3"
+bridgestan = ">=2.9.0,<3"
+jax = ">=0.11,<0.12"
+pymc = ">=6.3.1,<6.4"
+asdex = ">=0.5.2,<0.6"
+# Imported by nutpie.transform_adapter, which sets up flow adaptation
+flowjax = ">=17.1,<18"
+pymc-marketing = ">=1.2,<2"
+# pymc-extras needs a newer better-optimize than it declares
+better-optimize = ">=0.5"

@@ -1,1 +1,7 @@
 *.pdf
+.pixi/
+.bench-cache/
+posteriordb/
+pymc-model-catalogue/
+mmm-param-recovery/
+__pycache__

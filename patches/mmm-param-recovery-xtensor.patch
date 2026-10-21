@@ -1,0 +1,39 @@
+diff --git a/mmm_data_generator/transforms.py b/mmm_data_generator/transforms.py
+index b909570..d36aa16 100644
+--- a/mmm_data_generator/transforms.py
++++ b/mmm_data_generator/transforms.py
+@@ -19,12 +19,18 @@ This module contains functions for applying adstock and saturation transformatio
+ using PyMC Marketing's transformers module.
+ """
+ 
++import inspect
++
+ import numpy as np
+ from typing import Optional, Callable, Any, Tuple, Dict
+ from pytensor.tensor.variable import TensorVariable
+ from pymc_marketing.mmm import transformers
+ from .config import TransformConfig, ChannelConfig
+ 
++# Since pymc-marketing 0.19, the transformations take labelled xtensors, and
++# the ones that act along an axis also take the name of that dimension.
++_XTENSOR_API = "dim" in inspect.signature(transformers.geometric_adstock).parameters
++
+ 
+ def apply_transform(
+     spend_data: np.ndarray,
+@@ -48,7 +54,14 @@ def apply_transform(
+     np.ndarray
+         Transformed spend data.
+     """
+-    return transform_func(spend_data, **kwargs).eval().flatten()
++    if _XTENSOR_API:
++        import pytensor.tensor as pt
++        from pytensor.xtensor import as_xtensor
++
++        spend_data = as_xtensor(pt.as_tensor_variable(spend_data), dims=("date",))
++        if "dim" in inspect.signature(transform_func).parameters:
++            kwargs = {**kwargs, "dim": "date"}
++    return np.asarray(transform_func(spend_data, **kwargs).eval()).flatten()
+ 
+ 
+ def apply_transformations(
