@@ -16,6 +16,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
 import platform
 import re
 import sys
@@ -194,7 +195,9 @@ def machine_info():
     info = watermark.watermark(
         python=True, machine=True, hostname=True, packages=packages
     )
-    return f"{info}\nCPU model   : {cpu_model()}\n"
+    # The size of rayon's thread pool, which the samplers run on, changes timings.
+    rayon_threads = os.environ.get("RAYON_NUM_THREADS", "default")
+    return f"{info}\nCPU model   : {cpu_model()}\nRAYON_NUM_THREADS: {rayon_threads}\n"
 
 
 def cpu_model():

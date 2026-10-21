@@ -58,3 +58,7 @@ flowjax = ">=17.1,<18"
 pymc-marketing = ">=1.2,<2"
 # pymc-extras needs a newer better-optimize than it declares
 better-optimize = ">=0.5"
+
+# OpenBLAS threads compete with the sampler threads (rayon) and add noise to timings.
+[activation.env]
+OPENBLAS_NUM_THREADS = "1"
