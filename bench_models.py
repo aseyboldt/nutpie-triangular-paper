@@ -28,6 +28,7 @@ import arviz
 import joblib
 import numpy as np
 import pandas as pd
+import psutil
 import watermark
 
 import nutpie
@@ -57,7 +58,10 @@ STAN_SETTINGS = {
     "pilots-pilots": {
         "factorization": {"front": ["sigma_a", "sigma_b", "sigma_y", "mu_a", "mu_b"]},
     },
-    "one_comp_mm_elim_abs-one_comp_mm_elim_abs": {"ad_hessian": False, "dense_sparsity": True},
+    "one_comp_mm_elim_abs-one_comp_mm_elim_abs": {
+        "ad_hessian": False,
+        "dense_sparsity": True,
+    },
     "soil_carbon-soil_incubation": {"ad_hessian": False, "dense_sparsity": True},
     "election88-election88_full": {
         "factorization": {"front": ["sigma_a", "sigma_b", "sigma_c", "sigma_d"]},
@@ -141,12 +145,14 @@ SKIPPED_MODELS = [
 ]
 
 PRESETS = {
-    "default": lambda db: PREVIOUSLY_NONCONVERGED
-    + [
-        stan("eight_schools-eight_schools_noncentered"),
-        stan("election88-election88_full"),
-        pymc("stochastic_volatility"),
-    ],
+    "default": lambda db: (
+        PREVIOUSLY_NONCONVERGED
+        + [
+            stan("eight_schools-eight_schools_noncentered"),
+            stan("election88-election88_full"),
+            pymc("stochastic_volatility"),
+        ]
+    ),
     "previously-nonconverged": lambda db: PREVIOUSLY_NONCONVERGED,
     "posteriordb-all": lambda db: [stan(name) for name in sorted(db.posterior_names())],
     "mmm": lambda db: MMM_MODELS,
@@ -185,7 +191,9 @@ def machine_info():
     same machine.
     """
     packages = "nutpie,numpy,scipy,jax,pymc,pytensor,pymc_marketing,bridgestan,arviz"
-    info = watermark.watermark(python=True, machine=True, hostname=True, packages=packages)
+    info = watermark.watermark(
+        python=True, machine=True, hostname=True, packages=packages
+    )
     return f"{info}\nCPU model   : {cpu_model()}\n"
 
 
@@ -223,7 +231,9 @@ def build_mmm_model(name, data_dir):
         priors={
             "sigma": Prior(
                 "InverseGamma",
-                mu=Prior("HalfNormal", sigma=prior_sigma.mean(axis=0), dims=("channel",)),
+                mu=Prior(
+                    "HalfNormal", sigma=prior_sigma.mean(axis=0), dims=("channel",)
+                ),
                 sigma=Prior("HalfNormal", sigma=1.5),
                 dims=("channel", "geo"),
             ),
@@ -279,7 +289,11 @@ def mmm_hessian_sparsity(pymc_model, unconstrained_names):
         assert len(index) == len(dims[var]), label
         params.append((var, dict(zip(dims[var], index))))
 
-    mu, scale, sigma = "saturation_sigma_mu_log__", "saturation_sigma_sigma_log__", "saturation_sigma_log__"
+    mu, scale, sigma = (
+        "saturation_sigma_mu_log__",
+        "saturation_sigma_sigma_log__",
+        "saturation_sigma_log__",
+    )
     assert {mu, scale, sigma} <= dims.keys(), dims.keys()
 
     n = len(params)
@@ -293,7 +307,9 @@ def mmm_hessian_sparsity(pymc_model, unconstrained_names):
                 elif scale in pair:
                     interacts = sigma in pair
                 else:
-                    interacts = sigma in pair and index_i["channel"] == index_j["channel"]
+                    interacts = (
+                        sigma in pair and index_i["channel"] == index_j["channel"]
+                    )
             else:
                 geo_i, geo_j = index_i.get("geo"), index_j.get("geo")
                 interacts = geo_i is None or geo_j is None or geo_i == geo_j
@@ -320,10 +336,14 @@ def build_model(model_config, paths):
         sys.path.insert(0, str(paths["pymc"]))
         module = importlib.import_module(f"models.{model_config.name}")
         pymc_model, _ = module.build_model()
-        model = nutpie.compile_pymc_model(pymc_model, backend="jax", gradient_backend="jax")
+        model = nutpie.compile_pymc_model(
+            pymc_model, backend="jax", gradient_backend="jax"
+        )
     elif model_config.kind == "mmm":
         pymc_model = build_mmm_model(model_config.name, paths["mmm"])
-        model = nutpie.compile_pymc_model(pymc_model, backend="jax", gradient_backend="jax")
+        model = nutpie.compile_pymc_model(
+            pymc_model, backend="jax", gradient_backend="jax"
+        )
         if not model_config.sparsity:
             pattern = mmm_hessian_sparsity(pymc_model, model._unconstrained_names)
     else:
@@ -340,18 +360,83 @@ def build_model(model_config, paths):
     return model
 
 
-def run(model_config, sampler, seed, machine, *, paths):
+class RunStopped(Exception):
+    """A run was stopped because of its time or memory limit."""
+
+
+def memory_usage():
+    """The resident memory of this process and its children in bytes."""
+    process = psutil.Process()
+    total = process.memory_info().rss
+    for child in process.children(recursive=True):
+        try:
+            total += child.memory_info().rss
+        except psutil.NoSuchProcess:
+            pass
+    return total
+
+
+def sample_with_limits(model, kwargs, *, label, timeout, max_memory, interval=1.0):
+    """Sample in the background, and cancel if a limit is exceeded.
+
+    Raises `RunStopped` if sampling takes longer than `timeout` seconds, or
+    the memory goes above `max_memory` (a fraction of the total RAM).
+    Returns the trace and the peak memory in bytes.
+    """
+    max_bytes = max_memory * psutil.virtual_memory().total
+    start = time.monotonic()
+    peak = memory_usage()
+    background = nutpie.sample(model, **kwargs, blocking=False)
+    try:
+        while True:
+            # `wait` raises TimeoutError while sampling is still running.
+            # (`is_finished` currently raises that error too.)
+            try:
+                trace = background.wait(timeout=interval)
+                break
+            except TimeoutError:
+                pass
+            memory = memory_usage()
+            peak = max(peak, memory)
+            elapsed = time.monotonic() - start
+            reason = None
+            if timeout is not None and elapsed > timeout:
+                reason = f"timeout after {elapsed / 60:.1f} min"
+            elif memory > max_bytes:
+                reason = (
+                    f"memory {memory / 2**30:.1f} GiB is above the limit of "
+                    f"{max_bytes / 2**30:.1f} GiB"
+                )
+            if reason is not None:
+                print(f"[stopped]  {label}: {reason}", flush=True)
+                background.cancel()
+                raise RunStopped(reason)
+    except KeyboardInterrupt:
+        background.cancel()
+        raise
+    return trace, max(peak, memory_usage())
+
+
+def run(model_config, sampler, seed, machine, *, paths, timeout, max_memory):
     """Sample one model and summarize the trace.
 
     `machine` is not used, but is part of the joblib cache key. `paths` maps
-    each model kind to the checkout it comes from.
+    each model kind to the checkout it comes from. Sampling is stopped with
+    `RunStopped` after `timeout` seconds or if it uses more than `max_memory`
+    of the RAM.
     """
     model = build_model(model_config, paths)
     model = model.with_transform_adapt(scale_squash=8.0)
     kwargs = sampler.sample_kwargs(seed)
 
     start = time.perf_counter()
-    tr = nutpie.sample(model, **kwargs)
+    tr, peak_memory = sample_with_limits(
+        model,
+        kwargs,
+        label=f"{model_config.kind}:{model_config.name} {sampler.adaptation} seed={seed}",
+        timeout=timeout,
+        max_memory=max_memory,
+    )
     end = time.perf_counter()
 
     ess = arviz.ess(tr).min().to_dataset().to_pandas().min()
@@ -370,6 +455,7 @@ def run(model_config, sampler, seed, machine, *, paths):
         "divergences": int(tr.sample_stats.diverging.sum()),
         "n_dim": int(model.n_dim),
         "num_edges": None if factorization is None else factorization.num_edges,
+        "peak_memory_gib": peak_memory / 2**30,
         **kwargs,
     }
 
@@ -386,7 +472,9 @@ def parse_args(argv=None):
         metavar="KIND:NAME",
         help="Run only these models, e.g. stan:arK-arK or pymc:stochastic_volatility.",
     )
-    parser.add_argument("--list", action="store_true", help="List the selected models and exit.")
+    parser.add_argument(
+        "--list", action="store_true", help="List the selected models and exit."
+    )
     parser.add_argument("-o", "--output", type=Path, default=Path("bench.csv"))
     parser.add_argument(
         "--posteriordb",
@@ -413,7 +501,9 @@ def parse_args(argv=None):
         help="joblib.Memory directory for caching model runs.",
     )
     parser.add_argument(
-        "--no-cache", action="store_true", help="Rerun everything and don't write to the cache."
+        "--no-cache",
+        action="store_true",
+        help="Rerun everything and don't write to the cache.",
     )
     parser.add_argument(
         "--cache-tag",
@@ -428,6 +518,18 @@ def parse_args(argv=None):
     parser.add_argument("--chains", type=int, default=4)
     parser.add_argument("--tune", type=int, default=3000)
     parser.add_argument("--draws", type=int, default=1000)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=20,
+        help="Stop sampling a model after this many minutes.",
+    )
+    parser.add_argument(
+        "--max-memory",
+        type=float,
+        default=0.7,
+        help="Stop a run if it uses more than this fraction of the total RAM.",
+    )
     return parser.parse_args(argv)
 
 
@@ -436,14 +538,18 @@ def select_models(args):
 
     db = posteriordb.PosteriorDatabase(str(args.posteriordb))
     if args.models is None:
-        return [model for model in PRESETS[args.preset](db) if model not in SKIPPED_MODELS]
+        return [
+            model for model in PRESETS[args.preset](db) if model not in SKIPPED_MODELS
+        ]
     return [parse_model(model) for model in args.models]
 
 
 def parse_model(arg):
     kind, sep, name = arg.partition(":")
     if not sep or kind not in MODEL_KINDS:
-        raise SystemExit(f"Invalid model {arg!r}, expected one of {list(MODEL_KINDS)} as KIND:NAME")
+        raise SystemExit(
+            f"Invalid model {arg!r}, expected one of {list(MODEL_KINDS)} as KIND:NAME"
+        )
     return MODEL_KINDS[kind](name)
 
 
@@ -460,7 +566,8 @@ def main(argv=None):
     print(machine)
 
     memory = joblib.Memory(None if args.no_cache else args.cache_dir, verbose=0)
-    cached_run = memory.cache(run, ignore=["paths"])
+    # Results are valid regardless of the limits, as long as the run finished.
+    cached_run = memory.cache(run, ignore=["paths", "timeout", "max_memory"])
     paths = {
         "posteriordb": args.posteriordb,
         "pymc": args.model_catalogue,
@@ -484,10 +591,17 @@ def main(argv=None):
                     **dataclasses.asdict(sampler),
                 }
                 run_args = (model_config, sampler, seed, machine)
-                run_kwargs = {"paths": paths}
+                run_kwargs = {
+                    "paths": paths,
+                    "timeout": args.timeout * 60,
+                    "max_memory": args.max_memory,
+                }
                 cached = cached_run.check_call_in_cache(*run_args, **run_kwargs)
                 try:
                     record = cached_run(*run_args, **run_kwargs)
+                except RunStopped as e:
+                    records.append({**meta, "error": f"stopped: {e}"})
+                    continue
                 except Exception as e:
                     traceback.print_exc()
                     print(f"Error in {meta}: {e}")
@@ -513,7 +627,8 @@ def main(argv=None):
     meta_path = args.output.with_suffix(".json")
     meta_path.write_text(
         json.dumps(
-            {"machine": machine, "machine_hash": machine_hash, "argv": sys.argv}, indent=2
+            {"machine": machine, "machine_hash": machine_hash, "argv": sys.argv},
+            indent=2,
         )
     )
     print(f"Wrote {args.output} and {meta_path}")

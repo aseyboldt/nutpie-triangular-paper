@@ -17,7 +17,9 @@ SEED = sum(map(ord, "mmm_multidimensional"))
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mmm-param-recovery", type=Path, default=HERE / "mmm-param-recovery")
+    parser.add_argument(
+        "--mmm-param-recovery", type=Path, default=HERE / "mmm-param-recovery"
+    )
     parser.add_argument("-o", "--output-dir", type=Path, default=HERE / "data" / "mmm")
     args = parser.parse_args(argv)
 
